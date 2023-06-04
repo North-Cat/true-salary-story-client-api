@@ -356,106 +356,53 @@ router.get('/salary/search', async (req, res) => {
   const results = {};
 
   try {
-    if (title) {
-      const regex = new RegExp(title, 'i');
-      const titleResults = await Post.find({
-        title: { $regex: regex },
-        status: 'approved',
-      })
-        .skip((currentPage - 1) * perPage)
-        .limit(perPage);
-
-      results.titleResults = titleResults.map((post) => ({
-        postId: post._id,
-        title: post.title,
-        companyName: post.companyName,
-        createDate: formatDate(post.createDate),
-        jobDescription: post.jobDescription.substring(0, 10),
-        suggestion: post.suggestion.substring(0, 10),
-      }));
-
-      options.titleResultsCount = await Post.countDocuments({
-        title: { $regex: regex },
-        status: 'approved',
-      });
-    }
-
-    if (companyName) {
-      const regex = new RegExp(companyName, 'i');
-      const posts = await Post.find({
-        companyName: { $regex: regex },
-        status: 'approved',
-      });
-
-      const groupedPosts = {};
-      const companyNames = [];
-
-      for (const post of posts) {
-        if (!groupedPosts[post.companyName]) {
-          groupedPosts[post.companyName] = [];
-          companyNames.push(post.companyName);
-        }
-        if (groupedPosts[post.companyName].length < 3) {
-          if (!groupedPosts[post.companyName].includes(post.title)) {
-            groupedPosts[post.companyName].push(post.title);
-          }
-        }
-      }
-
-      const companyResults = await Company.find({
-        companyName: { $regex: regex },
-      });
-
-      const formattedResults = companyResults.map((company) => {
-        const nextPost = posts.find(
-          (post) => post.companyName === company.companyName,
-        );
-        const latestPostCreateDate = nextPost ? nextPost.createDate : null;
-        return {
-          companyName: company.companyName,
-          taxId: company.taxId,
-          latestPostCreateDate,
-          latestPostTitle: groupedPosts[company.companyName],
-        };
-      });
-
-      const startIndex = (currentPage - 1) * perPage;
-      const endIndex = startIndex + perPage;
-      const pagedResults = formattedResults.slice(startIndex, endIndex);
-
-      results.companyResults = pagedResults;
-      options.companyResultsCount = companyResults.length;
-    }
-
-    if (type) {
-      const regex = new RegExp(type, 'i');
-      const companyResultsByType = await Company.find({
-        type: { $regex: regex },
-      })
-        .skip((currentPage - 1) * perPage)
-        .limit(perPage);
-
-      results.typeResults = [];
-
-      for (const company of companyResultsByType) {
-        const postCount = await Post.countDocuments({
-          companyName: company.companyName,
+    const searchKeys = { title, companyName, type };
+    const searchFunctions = {
+      title: fetchPosts,
+      companyName: fetchCompanies,
+      type: fetchCompaniesByType,
+    };
+    const countFunctions = {
+      title: (regex) =>
+        Post.countDocuments({
+          title: { $regex: regex },
           status: 'approved',
-        });
+        }),
+      companyName: async (regex) => {
+        const companyResults = await fetchCompanies(
+          regex,
+          perPage,
+          currentPage,
+        );
+        return companyResults.length;
+      },
+      type: (regex) =>
+        Company.countDocuments({
+          type: { $regex: regex },
+        }),
+    };
 
-        results.typeResults.push({
-          companyName: company.companyName,
-          taxId: company.taxId,
-          type: company.type,
-          address: company.address,
-          phone: company.phone,
-          postCount,
-        });
+    // Calculate the number of active filters
+    const activeFilters = Object.values(searchKeys).reduce(
+      (acc, key) => (key ? acc + 1 : acc),
+      0,
+    );
+
+    // Divide the perPage limit by the number of active filters (if more than one)
+    const adjustedPerPage =
+      activeFilters > 1 ? Math.floor(perPage / activeFilters) : perPage;
+
+    for (const key in searchKeys) {
+      if (searchKeys[key]) {
+        const regex = new RegExp(searchKeys[key], 'i');
+
+        results[`${key}Results`] = await searchFunctions[key](
+          regex,
+          adjustedPerPage,
+          currentPage,
+        );
+        options[`${key}ResultsCount`] = await countFunctions[key](regex);
       }
-
-      options.typeResultsCount = await Company.countDocuments({
-        type: { $regex: regex },
-      });
     }
 
     res.json({
@@ -470,6 +417,85 @@ router.get('/salary/search', async (req, res) => {
     });
   }
 });
+
+async function fetchPosts(regex, limit, page) {
+  const posts = await Post.find({
+    title: { $regex: regex },
+    status: 'approved',
+  })
+    .skip((page - 1) * limit)
+    .limit(limit);
+
+  return posts.map((post) => ({
+    postId: post._id,
+    title: post.title,
+    companyName: post.companyName,
+    createDate: formatDate(post.createDate),
+    jobDescription: post.jobDescription.substring(0, 10),
+    suggestion: post.suggestion.substring(0, 10),
+  }));
+}
+
+async function fetchPosts(regex, limit, page) {
+  const posts = await Post.find({
+    title: { $regex: regex },
+    status: 'approved',
+  })
+    .skip((page - 1) * limit)
+    .limit(limit);
+
+  return posts.map((post) => ({
+    postId: post._id,
+    title: post.title,
+    companyName: post.companyName,
+    createDate: formatDate(post.createDate),
+    jobDescription: post.jobDescription.substring(0, 10),
+    suggestion: post.suggestion.substring(0, 10),
+  }));
+}
+
+async function fetchCompanies(regex, limit, page) {
+  const companies = await Company.find({
+    companyName: { $regex: regex },
+  })
+    .skip((page - 1) * limit)
+    .limit(limit);
+
+  return companies.map((company) => ({
+    companyName: company.companyName,
+    taxId: company.taxId,
+    address: company.address,
+    phone: company.phone,
+  }));
+}
+
+async function fetchCompaniesByType(regex, limit, page) {
+  const companiesByType = await Company.find({
+    type: { $regex: regex },
+  })
+    .skip((page - 1) * limit)
+    .limit(limit);
+
+  const typeResults = [];
+
+  for (const company of companiesByType) {
+    const postCount = await Post.countDocuments({
+      companyName: company.companyName,
+      status: 'approved',
+    });
+
+    typeResults.push({
+      companyName: company.companyName,
+      taxId: company.taxId,
+      type: company.type,
+      address: company.address,
+      phone: company.phone,
+      postCount,
+    });
+  }
+
+  return typeResults;
+}
 
 router.get('/salary/getTopCompanyType', async (req, res) => {
   try {
